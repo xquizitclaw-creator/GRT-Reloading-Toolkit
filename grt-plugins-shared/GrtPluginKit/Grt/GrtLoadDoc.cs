@@ -67,6 +67,15 @@ public sealed class GrtShotGroup
 }
 
 /// <summary>
+/// The calibration GRT needs to recover real-world scale from a shot-group picture:
+/// two reference points as image fractions, the real distance between them, and the
+/// shooting distance. Units are as GRT stores them — see the writer's remarks.
+/// </summary>
+public sealed record ShotGroupGeometry(
+    double RefP1X, double RefP1Y, double RefP2X, double RefP2Y,
+    double RefDistance, double ShootDistance);
+
+/// <summary>
 /// Read + edit a GRT <c>.grtload</c> file. Editing preserves the rest of the file
 /// verbatim (only whitespace/declaration cosmetics may change) and writes to a
 /// sibling <c>&lt;stem&gt;_&lt;suffix&gt;_&lt;stamp&gt;.grtload</c>.
@@ -313,6 +322,75 @@ public sealed class GrtLoadDoc
         _appendix.AppendChild(_doc.CreateWhitespace("\n    "));
     }
 
+    /// <summary>
+    /// Adds a GRT "Shot group analysis" tab: the picture, the two reference points that
+    /// give it scale, and one &lt;group&gt; per set of hits. Point coordinates are image
+    /// fractions 0..1 with y down, exactly as <see cref="ShotGroups"/> reads them back.
+    /// </summary>
+    /// <param name="pointSize">Hit marker diameter as a fraction of the image width.
+    /// GRT's own default for a 1600 px picture is about 0.032.</param>
+    public void AddShotGroup(string title, byte[] png, ShotGroupGeometry geom,
+                             IEnumerable<GrtShotGroupSet> groups, double pointSize = 0.03)
+    {
+        var (w, h) = PngSize(png);
+        string F(double v) => v.ToString("R", CultureInfo.InvariantCulture);
+
+        int idx = NextIndex();
+        var sg = _doc.CreateElement("ShotGroup");
+        sg.SetAttribute("index", idx.ToString(CultureInfo.InvariantCulture));
+        sg.SetAttribute("hasfocus", "false");
+        sg.SetAttribute("title", UniqueTitle(Enc(title)));
+        sg.SetAttribute("zoom", "0.25");
+        sg.SetAttribute("scrollPositionX", "0");
+        sg.SetAttribute("scrollPositionY", "0");
+        sg.SetAttribute("refPoint1X", F(geom.RefP1X));
+        sg.SetAttribute("refPoint1Y", F(geom.RefP1Y));
+        sg.SetAttribute("refPoint2X", F(geom.RefP2X));
+        sg.SetAttribute("refPoint2Y", F(geom.RefP2Y));
+        sg.SetAttribute("refDistance", F(geom.RefDistance));
+        sg.SetAttribute("shootDistance", F(geom.ShootDistance));
+        sg.SetAttribute("pointSize", F(pointSize));
+        sg.SetAttribute("statisticSize", "1");
+        sg.SetAttribute("darkenImageAlpha", "0.9");
+        sg.SetAttribute("showQuickHelp", "false");
+
+        var pic = _doc.CreateElement("picture");
+        pic.SetAttribute("name", Enc(SafeName(title) + ".png"));
+        pic.SetAttribute("type", "png");
+        pic.SetAttribute("width", w.ToString(CultureInfo.InvariantCulture));
+        pic.SetAttribute("height", h.ToString(CultureInfo.InvariantCulture));
+        pic.SetAttribute("data", Convert.ToBase64String(png));
+        sg.AppendChild(_doc.CreateWhitespace("\n        "));
+        sg.AppendChild(pic);
+
+        foreach (GrtShotGroupSet set in groups)
+        {
+            var ge = _doc.CreateElement("group");
+            ge.SetAttribute("name", Enc(set.Name));
+            foreach (GrtShotPoint p in set.Points)
+            {
+                var pe = _doc.CreateElement("point");
+                pe.SetAttribute("x", F(p.X));
+                pe.SetAttribute("y", F(p.Y));
+                if (p.Flyer) pe.SetAttribute("flyer", "true");
+                if (p.PointOfAim) pe.SetAttribute("PointOfAim", "true");
+                ge.AppendChild(_doc.CreateWhitespace("\n            "));
+                ge.AppendChild(pe);
+            }
+            ge.AppendChild(_doc.CreateWhitespace("\n        "));
+            sg.AppendChild(_doc.CreateWhitespace("\n        "));
+            sg.AppendChild(ge);
+        }
+
+        sg.AppendChild(_doc.CreateWhitespace("\n      "));
+        _appendix.AppendChild(_doc.CreateWhitespace("  "));
+        _appendix.AppendChild(sg);
+        _appendix.AppendChild(_doc.CreateWhitespace("\n    "));
+    }
+
+    private static string SafeName(string title) =>
+        string.Concat(title.Select(c => char.IsLetterOrDigit(c) ? c : '_'));
+
     public void AddMeasurement(string title, IEnumerable<GrtCharge> charges)
     {
         int idx = NextIndex();
@@ -359,8 +437,13 @@ public sealed class GrtLoadDoc
     // rapid re-runs reuse the file, but each write gets a fresh name — GRT's Load_File only reloads
     // a path it doesn't already have open, so a stable name would show stale content on the 2nd write.
     private const string ToolkitTag = "_toolkit_";
+    // The second alternative's time group must allow 4-6 digits, same as the first: SaveSibling
+    // always writes HHmmss (6 digits), so a 4-digit-only pattern never strips a non-"toolkit"
+    // family's stem (e.g. "shotmarker"). Left at \d{4} that stem never strips, so saving a
+    // sibling of a sibling compounds the name instead of reusing it, and the prune glob (which
+    // matches on the stripped stem) stops matching the earlier files - the family grows unbounded.
     private static readonly System.Text.RegularExpressions.Regex StemRx = new(
-        @"_toolkit(_\d{8}_\d{4,6})?$|_[a-z]+_\d{8}_\d{4}$",
+        @"_toolkit(_\d{8}_\d{4,6})?$|_[a-z]+_\d{8}_\d{4,6}$",
         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     private static string StripToolkitStem(string path) =>
@@ -381,20 +464,23 @@ public sealed class GrtLoadDoc
         => Path.Combine(Path.GetDirectoryName(path) ?? "", $"{StripToolkitStem(path)}.grtload");
 
     /// <summary>
-    /// Saves the toolkit "family" sibling and returns its path. Keeps the 3 newest of the family
-    /// (older snapshots are pruned). <paramref name="suffix"/> only documents which tool wrote.
+    /// Saves a generated sibling and returns its path, keeping the 3 newest of its family.
+    /// <paramref name="family"/> names the family: each plugin keeps its own, because pruning
+    /// is per-family and a shared one would let one plugin delete another's output.
+    /// <paramref name="suffix"/> only documents which tool wrote it.
     /// </summary>
-    public string SaveSibling(string suffix)
+    public string SaveSibling(string suffix, string family = "toolkit")
     {
         _ = suffix;
         string dir = Path.GetDirectoryName(SourcePath) ?? Path.GetTempPath();
         string stem = StripToolkitStem(SourcePath);
-        string outPath = Path.Combine(dir, $"{stem}{ToolkitTag}{DateTime.Now:yyyyMMdd_HHmmss}.grtload");
+        string tag = $"_{family}_";
+        string outPath = Path.Combine(dir, $"{stem}{tag}{DateTime.Now:yyyyMMdd_HHmmss}.grtload");
         Save(outPath);
 
         try
         {
-            foreach (var old in Directory.EnumerateFiles(dir, $"{stem}{ToolkitTag}*.grtload")
+            foreach (var old in Directory.EnumerateFiles(dir, $"{stem}{tag}*.grtload")
                          .Where(f => !string.Equals(f, outPath, StringComparison.OrdinalIgnoreCase))
                          .OrderByDescending(File.GetLastWriteTimeUtc).Skip(2))
                 File.Delete(old);
