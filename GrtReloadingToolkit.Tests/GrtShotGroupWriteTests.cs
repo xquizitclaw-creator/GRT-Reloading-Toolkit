@@ -141,4 +141,21 @@ public class GrtShotGroupWriteTests
         }
         finally { Directory.Delete(dir, recursive: true); }
     }
+
+    /// <summary>
+    /// <see cref="GrtLoadDoc.LooksLikeGeneratedSibling"/> has the same 4-digit-time bug
+    /// <c>StemRx</c> had, and it matters more here: it's the "you're editing a generated file,
+    /// not your original load" guard seven toolkit forms show the user. Before this task, every
+    /// <c>SaveSibling</c> call wrote the <c>_toolkit_</c> tag the pattern deliberately excludes,
+    /// so its "other family" alternative never matched anything real. Now that a plugin can write
+    /// a non-toolkit family (e.g. "shotmarker") with the same 6-digit HHmmss stamp SaveSibling
+    /// always writes, the guard must actually catch it.
+    /// </summary>
+    [Theory]
+    [InlineData("Krieger_shotmarker_20260921_103045.grtload", true)]  // this task's family: 6-digit HHmmss
+    [InlineData("Krieger_leaderboard_20260921_1030.grtload", true)]   // the pre-existing 4-digit shape
+    [InlineData("Krieger_toolkit_20260921_103045.grtload", false)]    // the toolkit's own family is excluded
+    [InlineData("Krieger-2 284 Shehane 180 H4831sc Lapua 8.5T.grtload", false)] // an ordinary user load
+    public void LooksLikeGeneratedSiblingCatchesOtherFamiliesAtAnyTimePrecision(string name, bool expected)
+        => Assert.Equal(expected, GrtLoadDoc.LooksLikeGeneratedSibling(name));
 }

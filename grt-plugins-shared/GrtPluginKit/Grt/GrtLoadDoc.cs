@@ -500,7 +500,7 @@ public sealed class GrtLoadDoc
     public static bool LooksLikeGeneratedSibling(string? path)
         => !string.IsNullOrEmpty(path) &&
            System.Text.RegularExpressions.Regex.IsMatch(Path.GetFileName(path!),
-               @"_(?!toolkit_)[a-z]+_\d{8}_\d{4}\.grtload$|^Athlon_Import_",
+               @"_(?!toolkit_)[a-z]+_\d{8}_\d{4,6}\.grtload$|^Athlon_Import_",
                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     /// <summary>The file to READ toolkit data from: the newest toolkit-family sibling, else the active tab.</summary>
