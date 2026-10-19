@@ -56,7 +56,8 @@ public sealed record GrtCurvePoint(
 public sealed class GrtClient : IDisposable
 {
     private readonly int _port;
-    private readonly TcpClient _tcp = new(AddressFamily.InterNetwork) { NoDelay = true };
+    private readonly string? _ipcFile;
+    private readonly Socket _socket;
     private readonly JsonFrameSplitter _splitter = new();
     private readonly SemaphoreSlim _reqGate = new(1, 1);
     private readonly object _sync = new();
@@ -65,10 +66,26 @@ public sealed class GrtClient : IDisposable
     private CancellationTokenSource? _cts;
     private TaskCompletionSource<JsonElement>? _pending;
 
-    public GrtClient(int port) => _port = port;
+    /// <summary>Connects to GRT on 127.0.0.1:<paramref name="port"/> (<c>--ipcport</c>, Windows and macOS).</summary>
+    public GrtClient(int port)
+    {
+        _port = port;
+        _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+    }
 
+    /// <summary>Connects to GRT through the Unix socket file at <paramref name="socketPath"/>
+    /// (<c>--ipcfile</c>, GRT's Linux transport).</summary>
+    public GrtClient(string socketPath)
+    {
+        _ipcFile = socketPath;
+        _socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+    }
+
+    /// <summary>The TCP port; 0 when connected through a socket file.</summary>
     public int Port => _port;
-    public bool Connected => _tcp.Connected;
+    /// <summary>The Unix socket file; null when connected over TCP.</summary>
+    public string? IpcFile => _ipcFile;
+    public bool Connected => _socket.Connected;
 
     private readonly object _activationLock = new();
     private string? _pendingActivation;
@@ -105,11 +122,12 @@ public sealed class GrtClient : IDisposable
 
     public void Connect()
     {
-        _tcp.Connect("127.0.0.1", _port);
-        _stream = _tcp.GetStream();
+        if (_ipcFile != null) _socket.Connect(new UnixDomainSocketEndPoint(_ipcFile));
+        else _socket.Connect(System.Net.IPAddress.Loopback, _port);
+        _stream = new NetworkStream(_socket, ownsSocket: false);
         _cts = new CancellationTokenSource();
         _ = Task.Run(() => ReadLoopAsync(_cts.Token));
-        Log?.Invoke($"connected to GRT on 127.0.0.1:{_port}");
+        Log?.Invoke(_ipcFile != null ? $"connected to GRT on {_ipcFile}" : $"connected to GRT on 127.0.0.1:{_port}");
     }
 
     private async Task ReadLoopAsync(CancellationToken ct)
@@ -388,7 +406,7 @@ public sealed class GrtClient : IDisposable
     {
         try { _cts?.Cancel(); } catch { }
         try { _stream?.Dispose(); } catch { }
-        try { _tcp.Dispose(); } catch { }
+        try { _socket.Dispose(); } catch { }
         _cts?.Dispose();
         _reqGate.Dispose();
     }
