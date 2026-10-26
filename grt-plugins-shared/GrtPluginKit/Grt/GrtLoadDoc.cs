@@ -351,7 +351,7 @@ public sealed class GrtLoadDoc
         sg.SetAttribute("shootDistance", F(geom.ShootDistance));
         sg.SetAttribute("pointSize", F(pointSize));
         sg.SetAttribute("statisticSize", "1");
-        sg.SetAttribute("darkenImageAlpha", "0.9");
+        sg.SetAttribute("darkenImageAlpha", "0");
         sg.SetAttribute("showQuickHelp", "false");
 
         var pic = _doc.CreateElement("picture");
